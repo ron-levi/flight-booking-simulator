@@ -1,0 +1,103 @@
+services:
+  # Temporal's PostgreSQL (separate from app DB)
+  temporal-postgresql:
+    container_name: temporal-postgresql
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - temporal-postgresql-data:/var/lib/postgresql/data
+    networks:
+      - flight-booking-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Temporal Server
+  temporal:
+    container_name: temporal
+    image: temporalio/auto-setup:1.22.4
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgresql
+    ports:
+      - "7233:7233"
+    networks:
+      - flight-booking-network
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Temporal Web UI
+  temporal-ui:
+    container_name: temporal-ui
+    image: temporalio/ui:2.22.3
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    ports:
+      - "8233:8080"
+    networks:
+      - flight-booking-network
+
+  # Application PostgreSQL
+  app-postgresql:
+    container_name: flight-app-db
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: flightapp
+      POSTGRES_PASSWORD: flightapp
+      POSTGRES_DB: flight_booking
+    ports:
+      - "5433:5432"
+    volumes:
+      - app-postgresql-data:/var/lib/postgresql/data
+    networks:
+      - flight-booking-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flightapp -d flight_booking"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for seat locks
+  redis:
+    container_name: flight-redis
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - flight-booking-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  flight-booking-network:
+    driver: bridge
+    name: flight-booking-network
+
+volumes:
+  temporal-postgresql-data:
+  app-postgresql-data:
+  redis-data:
