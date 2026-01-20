@@ -65,17 +65,6 @@ func (r *SeatLockRepo) LockSeats(ctx context.Context, flightID string, seatIDs [
 	return nil
 }
 
-// TryLockSeat attempts to lock a single seat using SETNX
-// Returns true if lock was acquired, false if already locked
-func (r *SeatLockRepo) TryLockSeat(ctx context.Context, flightID, seatID, orderID string, ttl time.Duration) (bool, error) {
-	key := seatLockKey(flightID, seatID)
-	ok, err := r.client.SetNX(ctx, key, orderID, ttl).Result()
-	if err != nil {
-		return false, fmt.Errorf("setnx seat lock: %w", err)
-	}
-	return ok, nil
-}
-
 // ReleaseLocks releases all seat locks for an order
 func (r *SeatLockRepo) ReleaseLocks(ctx context.Context, flightID string, seatIDs []string, orderID string) error {
 	for _, seatID := range seatIDs {
@@ -116,21 +105,6 @@ func (r *SeatLockRepo) ExtendLocks(ctx context.Context, flightID string, seatIDs
 	}
 
 	return nil
-}
-
-// IsLocked checks if a seat is currently locked
-func (r *SeatLockRepo) IsLocked(ctx context.Context, flightID, seatID string) (bool, string, error) {
-	key := seatLockKey(flightID, seatID)
-	orderID, err := r.client.Get(ctx, key).Result()
-
-	if err == redis.Nil {
-		return false, "", nil
-	}
-	if err != nil {
-		return false, "", fmt.Errorf("get seat lock: %w", err)
-	}
-
-	return true, orderID, nil
 }
 
 // GetLockedSeats returns all locked seat IDs for a flight

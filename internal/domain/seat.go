@@ -22,13 +22,3 @@ type Seat struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
-
-// SeatID returns the seat identifier (e.g., "12A")
-func (s *Seat) SeatID() string {
-	return s.ID
-}
-
-// IsAvailable checks if the seat can be selected
-func (s *Seat) IsAvailable() bool {
-	return s.Status == SeatStatusAvailable
-}

@@ -21,6 +21,28 @@ func NewFlightRepo(pool *pgxpool.Pool) *FlightRepo {
 	return &FlightRepo{pool: pool}
 }
 
+// GetAllFlightIDs returns all flight IDs in the system
+func (r *FlightRepo) GetAllFlightIDs(ctx context.Context) ([]string, error) {
+	query := `SELECT id FROM flights ORDER BY id ASC`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query flight IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var flightIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan flight ID: %w", err)
+		}
+		flightIDs = append(flightIDs, id)
+	}
+
+	return flightIDs, rows.Err()
+}
+
 // FindAll returns all flights
 func (r *FlightRepo) FindAll(ctx context.Context) ([]domain.Flight, error) {
 	query := `
@@ -125,6 +147,46 @@ func (r *FlightRepo) UpdateAvailableSeats(ctx context.Context, flightID string, 
 
 	if result.RowsAffected() == 0 {
 		return domain.ErrInsufficientSeats
+	}
+
+	return nil
+}
+
+// MarkSeatsReserved marks seats as reserved and assigns them to an order
+func (r *FlightRepo) MarkSeatsReserved(ctx context.Context, flightID string, seatIDs []string, orderID string) error {
+	query := `
+		UPDATE seats
+		SET status = 'reserved', order_id = $1, updated_at = NOW()
+		WHERE flight_id = $2 AND id = ANY($3) AND status = 'available'
+	`
+
+	result, err := r.pool.Exec(ctx, query, orderID, flightID, seatIDs)
+	if err != nil {
+		return fmt.Errorf("mark seats reserved: %w", err)
+	}
+
+	if result.RowsAffected() != int64(len(seatIDs)) {
+		return fmt.Errorf("expected to reserve %d seats, but reserved %d", len(seatIDs), result.RowsAffected())
+	}
+
+	return nil
+}
+
+// MarkSeatsAvailable releases seats back to available status
+func (r *FlightRepo) MarkSeatsAvailable(ctx context.Context, flightID string, seatIDs []string) error {
+	query := `
+		UPDATE seats
+		SET status = 'available', order_id = NULL, updated_at = NOW()
+		WHERE flight_id = $1 AND id = ANY($2)
+	`
+
+	result, err := r.pool.Exec(ctx, query, flightID, seatIDs)
+	if err != nil {
+		return fmt.Errorf("mark seats available: %w", err)
+	}
+
+	if result.RowsAffected() != int64(len(seatIDs)) {
+		return fmt.Errorf("expected to release %d seats, but released %d", len(seatIDs), result.RowsAffected())
 	}
 
 	return nil

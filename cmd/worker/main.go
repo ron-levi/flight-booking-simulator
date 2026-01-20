@@ -56,12 +56,28 @@ func main() {
 
 	// Register workflows
 	w.RegisterWorkflow(workflows.BookingWorkflow)
+	w.RegisterWorkflow(workflows.SeatReconciliationWorkflow)
 
 	// Create and register activities
 	bookingActivities := activities.NewBookingActivities(pool, redisClient, &cfg.Booking)
 	w.RegisterActivity(bookingActivities)
 
 	log.Println("Registered workflows and activities")
+
+	// Start seat reconciliation cron workflow
+	go func() {
+		workflowOptions := client.StartWorkflowOptions{
+			ID:           "seat-reconciliation-cron",
+			TaskQueue:    cfg.Temporal.TaskQueue,
+			CronSchedule: "*/10 * * * *", // Every 10 minutes
+		}
+		_, err := temporalClient.ExecuteWorkflow(ctx, workflowOptions, workflows.SeatReconciliationWorkflow)
+		if err != nil {
+			log.Printf("Warning: Failed to start reconciliation cron workflow: %v", err)
+		} else {
+			log.Println("Started seat reconciliation cron workflow (runs every 10 minutes)")
+		}
+	}()
 
 	// Start worker in goroutine
 	go func() {
