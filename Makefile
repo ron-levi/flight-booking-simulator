@@ -1,4 +1,4 @@
-.PHONY: help up down logs migrate-up migrate-down migrate-create build run test lint
+.PHONY: help up down logs migrate-up migrate-down migrate-create db-reset db-force-clean build run test lint
 
 # Default target
 help:
@@ -13,6 +13,8 @@ help:
 	@echo "  make migrate-up      - Run all migrations"
 	@echo "  make migrate-down    - Rollback last migration"
 	@echo "  make migrate-create  - Create new migration (NAME=migration_name)"
+	@echo "  make db-reset        - Reset database to seeded state"
+	@echo "  make db-force-clean  - Fix dirty database state"
 	@echo ""
 	@echo "Development:"
 	@echo "  make build           - Build server and worker binaries"
@@ -47,6 +49,17 @@ migrate-down:
 migrate-create:
 	@if [ -z "$(NAME)" ]; then echo "Usage: make migrate-create NAME=migration_name"; exit 1; fi
 	migrate create -ext sql -dir internal/database/migrations -seq $(NAME)
+
+db-reset:
+	@echo "Resetting database to seeded state..."
+	migrate -database "$(DATABASE_URL)" -path internal/database/migrations down -all
+	migrate -database "$(DATABASE_URL)" -path internal/database/migrations up
+	@echo "Database reset complete!"
+
+db-force-clean:
+	@echo "Forcing database to clean state..."
+	migrate -database "$(DATABASE_URL)" -path internal/database/migrations force 4
+	@echo "Database forced to version 4. You can now run 'make db-reset'"
 
 # Build
 build:
