@@ -774,7 +774,7 @@ The MVP is successful when a user can complete the full booking flow:
 **Mitigation:**
 - Clear UI messaging: "Demo Mode - Payments have 15% simulated failure rate"
 - Configuration flag to disable simulation for demos
-- Consistent failure for specific codes (e.g., "00000" always fails)
+- Consistent behavior for specific test codes (e.g., "99999" always fails with retries, "00000" always succeeds)
 
 ### Risk 4: Timer Drift
 

@@ -40,14 +40,17 @@ func (a *BookingActivities) ValidatePayment(ctx context.Context, input ValidateP
 	// Special codes for testing
 	switch input.PaymentCode {
 	case "00000":
-		// Always fails - useful for testing
+		// Always succeeds instantly - useful for testing success
+		return ValidatePaymentOutput{Success: true, Message: "Payment validated (test mode)"}, nil
+	case "99999":
+		// Always fails with retryable error - useful for testing retry flow
+		return ValidatePaymentOutput{}, fmt.Errorf("payment validation failed: temporary gateway error")
+	case "11111":
+		// Always fails with non-retryable error - useful for testing immediate failure
 		return ValidatePaymentOutput{}, temporal.NewApplicationError(
 			"payment declined: insufficient funds",
 			temporalpkg.ErrTypePaymentDeclined,
 		)
-	case "99999":
-		// Always succeeds instantly - useful for testing
-		return ValidatePaymentOutput{Success: true, Message: "Payment validated (test mode)"}, nil
 	}
 
 	// Simulate processing time (1-8 seconds)

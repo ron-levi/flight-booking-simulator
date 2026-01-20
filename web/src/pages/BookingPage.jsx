@@ -107,11 +107,8 @@ function BookingPage() {
   };
 
   // Handle update seats (after reservation)
+  // Note: Allows empty array to release all seats and reset timer
   const handleUpdateSeats = () => {
-    if (selectedSeats.length === 0) {
-      setError('Please select at least one seat');
-      return;
-    }
     updateSeatsMutation.mutate({ orderId, seats: selectedSeats });
   };
 
@@ -275,9 +272,13 @@ function BookingPage() {
                   onClick={handleUpdateSeats}
                   disabled={updateSeatsMutation.isPending}
                   className="w-full btn-secondary"
+                  title={selectedSeats.length === 0 ? 'Release all seats and reset timer' : 'Update seat selection and reset timer'}
                 >
                   {updateSeatsMutation.isPending ? 'Updating...' : 'Update Seats'}
                 </button>
+                <p className="text-xs text-gray-500 text-center -mt-2">
+                  Updating seats resets the timer to 15 minutes
+                </p>
 
                 <div className="border-t pt-4">
                   <h3 className="font-semibold mb-3">Complete Payment</h3>

@@ -138,12 +138,8 @@ type UpdateSeatsOutput struct {
 }
 
 // UpdateSeats updates the seat selection for an order
+// Note: Allows empty seats array to release all seats and reset timer
 func (s *BookingService) UpdateSeats(ctx context.Context, orderID string, seats []string) (*UpdateSeatsOutput, error) {
-	// Validate seats are not empty
-	if len(seats) == 0 {
-		return nil, domain.ErrSeatUnavailable
-	}
-
 	// Send signal to workflow
 	err := s.temporalClient.SignalUpdateSeats(ctx, orderID, seats)
 	if err != nil {

@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -61,14 +62,11 @@ func BookingWorkflow(ctx workflow.Context, input temporalpkg.BookingWorkflowInpu
 	}
 	orderCtx := workflow.WithActivityOptions(ctx, orderActivityOptions)
 
-	// Activity options for payment (configured timeout and retries from PRD)
+	// Activity options for payment (no automatic retries - we handle retries manually to track attempts)
 	paymentActivityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 10 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    time.Second,
-			BackoffCoefficient: 1.5,
-			MaximumInterval:    5 * time.Second,
-			MaximumAttempts:    3,
+			MaximumAttempts: 1, // Disable automatic retries, we'll handle manually
 			NonRetryableErrorTypes: []string{
 				temporalpkg.ErrTypeInvalidPaymentCode,
 				temporalpkg.ErrTypePaymentDeclined,
@@ -100,21 +98,7 @@ func BookingWorkflow(ctx workflow.Context, input temporalpkg.BookingWorkflowInpu
 		}
 	}()
 
-	// Phase 1: Reserve seats
-	state.status = domain.OrderStatusSeatsReserved
-	err = workflow.ExecuteActivity(seatCtx, a.ReserveSeats, activities.ReserveSeatInput{
-		OrderID:  input.OrderID,
-		FlightID: input.FlightID,
-		Seats:    input.Seats,
-	}).Get(seatCtx, nil)
-	if err != nil {
-		state.lastError = err.Error()
-		state.status = domain.OrderStatusFailed
-		return state.toResult(), err
-	}
-	logger.Info("Seats reserved", "seats", input.Seats)
-
-	// Create order in database
+	// Phase 1: Create order in database first (needed for FK constraint)
 	state.expiresAt = workflow.Now(ctx).Add(15 * time.Minute)
 	err = workflow.ExecuteActivity(orderCtx, a.CreateOrder, activities.CreateOrderInput{
 		OrderID:    input.OrderID,
@@ -128,6 +112,21 @@ func BookingWorkflow(ctx workflow.Context, input temporalpkg.BookingWorkflowInpu
 		state.status = domain.OrderStatusFailed
 		return state.toResult(), err
 	}
+	logger.Info("Order created in database", "orderID", input.OrderID)
+
+	// Reserve seats (both Redis locks and DB status)
+	state.status = domain.OrderStatusSeatsReserved
+	err = workflow.ExecuteActivity(seatCtx, a.ReserveSeats, activities.ReserveSeatInput{
+		OrderID:  input.OrderID,
+		FlightID: input.FlightID,
+		Seats:    input.Seats,
+	}).Get(seatCtx, nil)
+	if err != nil {
+		state.lastError = err.Error()
+		state.status = domain.OrderStatusFailed
+		return state.toResult(), err
+	}
+	logger.Info("Seats reserved", "seats", input.Seats)
 
 	// Phase 2: Wait for payment signal with 15-minute timeout
 	// Handle seat update signals to reset timer
@@ -249,39 +248,73 @@ func BookingWorkflow(ctx workflow.Context, input temporalpkg.BookingWorkflowInpu
 		return state.toResult(), temporalpkg.ErrWorkflowCanceled
 	}
 
-	// Phase 3: Process payment
+	// Phase 3: Process payment with manual retry loop (3 attempts max)
 	state.status = domain.OrderStatusPaymentProcessing
 	_ = workflow.ExecuteActivity(orderCtx, a.UpdateOrderStatus, activities.UpdateOrderStatusInput{
 		OrderID: state.orderID,
 		Status:  domain.OrderStatusPaymentProcessing,
 	}).Get(orderCtx, nil)
 
+	const maxPaymentAttempts = 3
 	var paymentResult activities.ValidatePaymentOutput
-	err = workflow.ExecuteActivity(paymentCtx, a.ValidatePayment, activities.ValidatePaymentInput{
-		OrderID:     state.orderID,
-		PaymentCode: paymentSignal.PaymentCode,
-	}).Get(paymentCtx, &paymentResult)
+	var lastPaymentErr error
 
-	// Track payment attempts (Temporal handles retries internally)
-	state.paymentAttempts++
+	for attempt := 1; attempt <= maxPaymentAttempts; attempt++ {
+		state.paymentAttempts = attempt
+		logger.Info("Payment validation attempt", "attempt", attempt, "maxAttempts", maxPaymentAttempts)
 
-	if err != nil {
-		state.status = domain.OrderStatusFailed
-		state.lastError = "payment failed: " + err.Error()
-		logger.Error("Payment validation failed", "error", err)
+		err = workflow.ExecuteActivity(paymentCtx, a.ValidatePayment, activities.ValidatePaymentInput{
+			OrderID:     state.orderID,
+			PaymentCode: paymentSignal.PaymentCode,
+		}).Get(paymentCtx, &paymentResult)
 
-		// Check if it's a non-retryable error
+		if err == nil {
+			// Payment succeeded
+			logger.Info("Payment validation succeeded", "attempt", attempt)
+			break
+		}
+
+		lastPaymentErr = err
+		logger.Warn("Payment validation failed", "attempt", attempt, "error", err)
+
+		// Check if it's a non-retryable error type
 		var appErr *temporal.ApplicationError
 		if errors.As(err, &appErr) {
-			state.lastError = "payment failed: " + appErr.Message()
+			errType := appErr.Type()
+			// Only break if it's one of our defined non-retryable types
+			if errType == temporalpkg.ErrTypeInvalidPaymentCode || errType == temporalpkg.ErrTypePaymentDeclined {
+				logger.Error("Payment validation failed with non-retryable error", "type", errType)
+				state.lastError = "payment failed: " + appErr.Message()
+				break
+			}
 		}
+
+		// Retryable error - wait before next attempt (exponential backoff)
+		if attempt < maxPaymentAttempts {
+			backoffDuration := time.Second * time.Duration(attempt) // 1s, 2s
+			state.lastError = fmt.Sprintf("payment failed (attempt %d of %d): %s", attempt, maxPaymentAttempts, err.Error())
+			logger.Info("Waiting before retry", "backoff", backoffDuration)
+			_ = workflow.Sleep(ctx, backoffDuration)
+		} else {
+			// Final attempt - set error message
+			state.lastError = fmt.Sprintf("payment failed after %d attempts: %s", maxPaymentAttempts, err.Error())
+		}
+	}
+
+	// Check final result
+	if lastPaymentErr != nil {
+		state.status = domain.OrderStatusFailed
+		if state.lastError == "" {
+			state.lastError = fmt.Sprintf("payment failed after %d attempts: %s", state.paymentAttempts, lastPaymentErr.Error())
+		}
+		logger.Error("Payment validation failed after all attempts", "attempts", state.paymentAttempts, "error", lastPaymentErr)
 
 		_ = workflow.ExecuteActivity(orderCtx, a.FailOrder, activities.FailOrderInput{
 			OrderID: state.orderID,
 			Reason:  state.lastError,
 		}).Get(orderCtx, nil)
 
-		return state.toResult(), err
+		return state.toResult(), lastPaymentErr
 	}
 
 	// Phase 4: Confirm booking

@@ -147,10 +147,8 @@ func (h *Handlers) UpdateSeats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Seats) == 0 {
-		WriteError(w, http.StatusBadRequest, ErrCodeInvalidSeats, "at least one seat must be selected")
-		return
-	}
+	// Note: Allow empty seats array to release all seats and reset timer
+	// This enables users to deselect all seats and restart their reservation
 
 	output, err := h.bookingService.UpdateSeats(r.Context(), orderID, req.Seats)
 	if err != nil {
