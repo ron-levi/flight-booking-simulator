@@ -36,3 +36,6 @@ Thumbs.db
 # Build
 dist/
 tmp/
+
+# Claude
+.agents/
